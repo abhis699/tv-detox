@@ -542,16 +542,41 @@ public class MainActivity extends Activity {
 
     private void moveApp(String pkg, int direction) {
         if (moveOrder == null) return;
-        List<String> list = moveOrder;
-        int from = list.indexOf(pkg);
-        if (from < 0) return;
+        int from = moveOrder.indexOf(pkg);
+        if (from < 0 || from >= appTiles.size()) return;
         int step = direction == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : direction == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : 0;
         if (step == 0) return;
-        int to = Math.max(0, Math.min(list.size() - 1, from + step));
+        int to = Math.max(0, Math.min(appTiles.size() - 1, from + step));
         if (to == from) return;
-        Collections.swap(list, from, to);
+
+        // Reorder the existing wrapper and tile views in place. Rebuilding here
+        // re-queries PackageManager and recreates every app's banner bitmap for
+        // every remote key press.
+        View tile = appTiles.get(from);
+        View wrapper = (View) tile.getParent();
+        LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) wrapper.getLayoutParams();
+        appGrid.removeViewAt(from);
+        appGrid.addView(wrapper, to, params);
+        Collections.swap(moveOrder, from, to);
+        Collections.swap(appTiles, from, to);
+        for (int i = Math.min(from, to); i <= Math.max(from, to); i++) {
+            View item = appGrid.getChildAt(i);
+            LinearLayout.LayoutParams itemParams = (LinearLayout.LayoutParams) item.getLayoutParams();
+            itemParams.leftMargin = i == 0 ? px(MARGIN) : px(GAP);
+            item.setLayoutParams(itemParams);
+        }
+
+        for (View app : appTiles) {
+            app.setNextFocusLeftId(View.NO_ID);
+            app.setNextFocusRightId(View.NO_ID);
+        }
+        appTiles.get(0).setNextFocusLeftId(appTiles.get(0).getId());
+        View lastApp = appTiles.get(appTiles.size() - 1);
+        lastApp.setNextFocusRightId(lastApp.getId());
+
         focusedKey = pkg;
-        buildTiles();
+        tile.requestFocus();
+        appScroll.post(() -> scrollTileIntoView(tile));
     }
 
     private void finishMove() {
