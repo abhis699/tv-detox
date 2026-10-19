@@ -86,6 +86,7 @@ public class MainActivity extends Activity {
     private TextView manageButton;
     private TextView moveHint;
     private boolean dirty = true;
+    private boolean resumed;
     private String focusedKey;
     private boolean moving;
     private String movingKey;
@@ -93,7 +94,19 @@ public class MainActivity extends Activity {
     private boolean focusFirstOnResume = true;
 
     private final BroadcastReceiver packagesChanged = new BroadcastReceiver() {
-        @Override public void onReceive(Context c, Intent i) { dirty = true; }
+        @Override public void onReceive(Context c, Intent i) {
+            dirty = true;
+            if (resumed && root != null) {
+                // Package updates can send REMOVED, ADDED, and CHANGED in a burst.
+                root.removeCallbacks(refreshPackages);
+                root.postDelayed(refreshPackages, 350);
+            }
+        }
+    };
+    private final Runnable refreshPackages = () -> {
+        if (!resumed || root == null || isFinishing()) return;
+        dirty = false;
+        buildTiles();
     };
     private final BroadcastReceiver wifiChanged = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) { updateWifiStatus(); }
@@ -218,6 +231,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (root != null) root.removeCallbacks(refreshPackages);
         unregisterReceiver(packagesChanged);
         unregisterReceiver(wifiChanged);
         super.onDestroy();
@@ -225,6 +239,8 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        resumed = false;
+        if (root != null) root.removeCallbacks(refreshPackages);
         focusFirstOnResume = true;
         super.onPause();
     }
@@ -281,6 +297,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        resumed = true;
         updateWifiStatus();
         // Rebuild only when apps were installed, removed or updated.
         if (dirty) {
@@ -380,7 +397,7 @@ public class MainActivity extends Activity {
             final View target = restore;
             target.requestFocus();
             if (appTiles.contains(target)) appScroll.post(() -> scrollTileIntoView(target));
-        }
+        } else if (!appTiles.isEmpty()) focusFirstApp();
     }
 
     private void focusFirstApp() {
