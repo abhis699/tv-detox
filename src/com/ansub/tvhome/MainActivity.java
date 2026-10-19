@@ -9,9 +9,11 @@ import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.net.Uri;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
@@ -26,12 +28,13 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextClock;
 import android.widget.TextView;
-import android.widget.ScrollView;
 import android.app.AlertDialog;
 
 import java.io.File;
@@ -57,18 +60,25 @@ public class MainActivity extends Activity {
 
     // Layout is designed at 1920x1080 and scaled to the TV's real UI size by px().
     private static final int MARGIN = 96, GAP = 36, RADIUS = 22;
-    private static final int ROW1_TOP = 604, ROW2_TOP = 828;
     private float scale = 1f;
 
     private static Typeface regular, semibold;
 
     private FrameLayout root;
-    private FrameLayout appGrid;
-    private ScrollView appScroll;
+    private LinearLayout appGrid;
+    private LinearLayout importantRow;
+    private HorizontalScrollView appScroll;
     private final List<View> tiles = new ArrayList<>();
+    private final List<View> appTiles = new ArrayList<>();
+    private final List<View> importantTiles = new ArrayList<>();
+    private TextView manageButton;
+    private TextView moveHint;
     private boolean dirty = true;
     private String focusedKey;
     private boolean moving;
+    private String movingKey;
+    private List<String> moveOrder;
+    private boolean focusFirstOnResume = true;
 
     private final BroadcastReceiver packagesChanged = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) { dirty = true; }
@@ -117,14 +127,24 @@ public class MainActivity extends Activity {
         sb.rightMargin = px(MARGIN);
         root.addView(settingsButton, sb);
 
-        appScroll = new ScrollView(this);
+        appScroll = new HorizontalScrollView(this);
+        appScroll.setHorizontalScrollBarEnabled(false);
         appScroll.setFillViewport(false);
         appScroll.setClipChildren(false);
-        appGrid = new FrameLayout(this);
+        appGrid = new LinearLayout(this);
+        appGrid.setOrientation(LinearLayout.HORIZONTAL);
         appGrid.setClipChildren(false);
-        appScroll.addView(appGrid, new ScrollView.LayoutParams(-1, -2));
-        FrameLayout.LayoutParams sp = at(0, px(500), -1, -1);
+        appScroll.addView(appGrid, new HorizontalScrollView.LayoutParams(-2, -2));
+        FrameLayout.LayoutParams sp = at(0, px(588), -1, px(230));
         root.addView(appScroll, sp);
+        importantRow = new LinearLayout(this);
+        importantRow.setOrientation(LinearLayout.HORIZONTAL);
+        importantRow.setClipChildren(false);
+        root.addView(importantRow, at(0, px(828), -1, -2));
+        moveHint = text(px(24), 0xE0FFFFFF, regular);
+        moveHint.setText("Move app:  ← / →   OK saves position");
+        moveHint.setVisibility(View.GONE);
+        root.addView(moveHint, at(px(MARGIN), px(500), -2, -2));
         setContentView(root);
 
         IntentFilter f = new IntentFilter();
@@ -143,10 +163,18 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onPause() {
+        focusFirstOnResume = true;
+        super.onPause();
+    }
+
+    @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        focusFirstOnResume = true;
         if (saveConfig(intent)) buildTiles();
+        focusFirstApp();
     }
 
     // Saves an app list passed with --es apps "...". Returns true if it changed.
@@ -179,7 +207,7 @@ public class MainActivity extends Activity {
             }
         }
         out.removeAll(hiddenApps);
-        String order = prefs.getString("order", "");
+        String order = moving && moveOrder != null ? join(moveOrder) : prefs.getString("order", "");
         if (!order.isEmpty()) {
             List<String> sorted = new ArrayList<>();
             for (String p : order.split(",")) if (out.contains(p) && !sorted.contains(p)) sorted.add(p);
@@ -197,8 +225,10 @@ public class MainActivity extends Activity {
             dirty = false;
             buildTiles();
         }
-        View f = getCurrentFocus();
-        if (f == null && !tiles.isEmpty()) tiles.get(0).requestFocus();
+        if (focusFirstOnResume) {
+            focusFirstOnResume = false;
+            focusFirstApp();
+        } else if (getCurrentFocus() == null && !appTiles.isEmpty()) appTiles.get(0).requestFocus();
     }
 
     @Override
@@ -225,14 +255,17 @@ public class MainActivity extends Activity {
 
     private void buildTiles() {
         appGrid.removeAllViews();
+        importantRow.removeAllViews();
+        if (manageButton != null) root.removeView(manageButton);
         tiles.clear();
+        appTiles.clear();
+        importantTiles.clear();
 
         PackageManager pm = getPackageManager();
         int m = px(MARGIN), g = px(GAP);
         int w = (getResources().getDisplayMetrics().widthPixels - 2 * m - g * (PER_ROW - 1)) / PER_ROW;
         int h = w * 9 / 16;
 
-        int col = 0, row = 0;
         List<String> apps = appList(pm);
         for (String pkg : apps) {
             Intent li = launchIntent(pm, pkg);
@@ -247,36 +280,70 @@ public class MainActivity extends Activity {
             // Apps without a TV banner get a plain tile with their normal icon.
             Drawable icon = null;
             if (banner == null) try { icon = pm.getApplicationIcon(pkg); } catch (Exception ignored) {}
-            int x = m + col * (w + g);
-            int y = px(16) + row * (h + px(76));
-            addTile(pkg, label, banner, null, icon, x, y, w, h);
-            if (++col == PER_ROW) { col = 0; row++; }
+            addTile(appGrid, pkg, label, banner, null, icon, w, h, g, true);
         }
-        int y = px(16) + row * (h + px(76));
-        col = 0;
         if (!apps.contains(PLAY_STORE) && launchIntent(pm, PLAY_STORE) != null)
-            addTile(PLAY_STORE, "Play Store", null, LineIcon.PLAY, null, m + col++ * (w + g), y, w, h);
+            addTile(importantRow, PLAY_STORE, "Play Store", null, LineIcon.PLAY, null, w, h, g, false);
         for (TvInputInfo in : hdmiInputs()) {
-            if (col == PER_ROW) { col = 0; y += h + px(76); }
-            addTile(in.getId(), inputLabel(in), null, LineIcon.HDMI, null, m + col++ * (w + g), y, w, h);
+            addTile(importantRow, in.getId(), inputLabel(in), null, LineIcon.HDMI, null, w, h, g, false);
         }
-        if (col == PER_ROW) { col = 0; y += h + px(76); }
-        addTile(SETTINGS, "Settings", null, LineIcon.SETTINGS, null, m + col * (w + g), y, w, h);
-        TextView manage = text(px(24), 0xE0FFFFFF, regular);
-        manage.setText("Manage hidden apps"); manage.setGravity(Gravity.CENTER); manage.setFocusable(true);
-        manage.setOnClickListener(v -> manageHiddenApps());
-        manage.setOnLongClickListener(v -> { manageHiddenApps(); return true; });
-        FrameLayout.LayoutParams mp = new FrameLayout.LayoutParams(px(360), px(70));
-        mp.leftMargin = m; mp.topMargin = y + h + px(24);
-        appGrid.addView(manage, mp);
+        addTile(importantRow, SETTINGS, "Settings", null, LineIcon.SETTINGS, null, w, h, g, false);
+        manageButton = text(px(24), 0xE0FFFFFF, regular);
+        manageButton.setId(View.generateViewId());
+        manageButton.setText("Manage hidden apps"); manageButton.setGravity(Gravity.CENTER); manageButton.setFocusable(true);
+        manageButton.setOnClickListener(v -> manageHiddenApps());
+        manageButton.setOnLongClickListener(v -> { manageHiddenApps(); return true; });
+        root.addView(manageButton, at(m, px(1000), px(360), px(70)));
+
+        if (!appTiles.isEmpty() && !importantTiles.isEmpty()) {
+            int firstApp = appTiles.get(0).getId();
+            View lastApp = appTiles.get(appTiles.size() - 1);
+            for (View app : appTiles) app.setNextFocusDownId(importantTiles.get(0).getId());
+            appTiles.get(0).setNextFocusLeftId(firstApp);
+            lastApp.setNextFocusRightId(lastApp.getId());
+            for (int i = 0; i < importantTiles.size(); i++) {
+                View option = importantTiles.get(i);
+                option.setNextFocusUpId(firstApp);
+                option.setNextFocusDownId(manageButton.getId());
+            }
+            importantTiles.get(0).setNextFocusLeftId(importantTiles.get(0).getId());
+            View lastOption = importantTiles.get(importantTiles.size() - 1);
+            lastOption.setNextFocusRightId(lastOption.getId());
+            if (!importantTiles.isEmpty()) manageButton.setNextFocusUpId(importantTiles.get(importantTiles.size() - 1).getId());
+        }
 
         View restore = null;
         for (View t : tiles) if (t.getTag().equals(focusedKey)) restore = t;
-        if (restore != null) restore.requestFocus();
+        if (restore != null) {
+            final View target = restore;
+            target.requestFocus();
+            if (appTiles.contains(target)) appScroll.post(() -> scrollTileIntoView(target));
+        }
     }
 
-    private void addTile(final String key, String label, Drawable banner, int[] lineIcon, Drawable appIcon,
-                         int x, int y, int w, int h) {
+    private void focusFirstApp() {
+        if (appTiles.isEmpty()) return;
+        View first = appTiles.get(0);
+        focusedKey = (String) first.getTag();
+        first.requestFocus();
+        appScroll.post(() -> scrollTileIntoView(first));
+    }
+
+    private void scrollTileIntoView(View tile) {
+        if (tile.getParent() == null || !tile.hasFocus()) return;
+        Rect rect = new Rect();
+        tile.getDrawingRect(rect);
+        appScroll.offsetDescendantRectToMyCoords(tile, rect);
+        int target = appScroll.getScrollX();
+        int edge = px(MARGIN);
+        if (rect.left < target + edge) target = rect.left - edge;
+        else if (rect.right > target + appScroll.getWidth() - edge)
+            target = rect.right - appScroll.getWidth() + edge;
+        appScroll.smoothScrollTo(Math.max(0, target), 0);
+    }
+
+    private void addTile(LinearLayout row, final String key, String label, Drawable banner, int[] lineIcon,
+                         Drawable appIcon, int w, int h, int gap, boolean appTile) {
         FrameLayout card = new FrameLayout(this);
         final GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(px(RADIUS));
@@ -311,6 +378,7 @@ public class MainActivity extends Activity {
         card.setBackground(bg);
         card.setClipToOutline(true);
         card.setFocusable(true);
+        card.setId(View.generateViewId());
         card.setTag(key);
 
         // Banner tiles show their name underneath when focused.
@@ -324,24 +392,47 @@ public class MainActivity extends Activity {
         final boolean glass = banner == null;
         card.setOnFocusChangeListener((v, has) -> {
             if (has) focusedKey = key;
-            if (glass) bg.setColor(has ? 0x38FFFFFF : 0x13FFFFFF);
-            v.animate().scaleX(has ? 1.1f : 1f).scaleY(has ? 1.1f : 1f).translationZ(has ? px(26) : 0)
+            if (has && appTile) {
+                appScroll.post(() -> scrollTileIntoView(v));
+            }
+            boolean selectedForMove = has && moving && key.equals(movingKey);
+            if (glass) bg.setColor(has ? (selectedForMove ? 0x70FFFFFF : 0x38FFFFFF) : 0x13FFFFFF);
+            bg.setStroke(selectedForMove ? px(4) : Math.max(1, px(2)), selectedForMove ? 0xFFFFC27A : 0x17FFFFFF);
+            float lift = selectedForMove ? 1.22f : has ? 1.1f : 1f;
+            v.animate().scaleX(lift).scaleY(lift).translationZ(has ? (selectedForMove ? px(40) : px(26)) : 0)
                     .setDuration(140).withLayer().start();
             if (caption != null) caption.setVisibility(has ? View.VISIBLE : View.INVISIBLE);
         });
         card.setOnClickListener(v -> open(key));
-        if (!isInput(key) && !SETTINGS.equals(key)) {
-            card.setLongClickable(true);
-            card.setOnLongClickListener(v -> { showAppActions(key); return true; });
-        }
+        final boolean[] longPressTriggered = {false};
+        final Runnable markLongPress = () -> longPressTriggered[0] = true;
         card.setOnKeyListener((v, code, ev) -> {
-            if (moving && ev.getAction() == KeyEvent.ACTION_UP && (code == KeyEvent.KEYCODE_DPAD_LEFT
-                    || code == KeyEvent.KEYCODE_DPAD_RIGHT || code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN)) {
-                moveApp(key, code); return true;
+            boolean arrow = code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT
+                    || code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN;
+            if (moving && arrow) {
+                if (ev.getAction() == KeyEvent.ACTION_UP
+                        && (code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT)) moveApp(key, code);
+                return true;
             }
-            if (ev.getAction() == KeyEvent.ACTION_UP && (code == KeyEvent.KEYCODE_DPAD_CENTER
-                    || code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_NUMPAD_ENTER)) {
-                open(key);
+            boolean select = code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER
+                    || code == KeyEvent.KEYCODE_NUMPAD_ENTER;
+            if (select && ev.getAction() == KeyEvent.ACTION_DOWN) {
+                if (ev.getRepeatCount() == 0) {
+                    longPressTriggered[0] = false;
+                    if (appTile && !moving) v.postDelayed(markLongPress, ViewConfiguration.getLongPressTimeout());
+                }
+                return true;
+            }
+            if (select && ev.getAction() == KeyEvent.ACTION_UP) {
+                v.removeCallbacks(markLongPress);
+                if (longPressTriggered[0]) {
+                    longPressTriggered[0] = false;
+                    showAppActions(key);
+                } else if (moving) {
+                    finishMove();
+                } else {
+                    open(key);
+                }
                 return true;
             }
             return false;
@@ -355,31 +446,55 @@ public class MainActivity extends Activity {
             cp.topMargin = h + px(22);
             wrap.addView(caption, cp);
         }
-        appGrid.addView(wrap, at(x, y, w, -2));
+        LinearLayout.LayoutParams tileLp = new LinearLayout.LayoutParams(w, h + (caption == null ? 0 : px(56)));
+        tileLp.leftMargin = row.getChildCount() == 0 ? px(MARGIN) : gap;
+        tileLp.topMargin = px(16);
+        row.addView(wrap, tileLp);
         tiles.add(card);
+        if (appTile) appTiles.add(card); else importantTiles.add(card);
     }
 
     private void showAppActions(String pkg) {
         new AlertDialog.Builder(this).setTitle("App options")
-                .setItems(new String[] {"Move app", "Hide app"}, (d, which) -> {
-                    if (which == 0) { moving = true; focusedKey = pkg; }
-                    else hideApp(pkg);
+                .setItems(new String[] {"Move app", "Hide app", "App info"}, (d, which) -> {
+                    if (which == 0) {
+                        moveOrder = new ArrayList<>(appList(getPackageManager()));
+                        moving = true;
+                        movingKey = pkg;
+                        focusedKey = pkg;
+                        moveHint.setVisibility(View.VISIBLE);
+                        buildTiles();
+                    }
+                    else if (which == 1) hideApp(pkg);
+                    else showAppInfo(pkg);
                 }).show();
     }
 
+    private void showAppInfo(String pkg) {
+        Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + pkg));
+        try { startActivity(i); } catch (Exception ignored) {}
+    }
+
     private void moveApp(String pkg, int direction) {
-        List<String> list = appList(getPackageManager());
+        if (moveOrder == null) return;
+        List<String> list = moveOrder;
         int from = list.indexOf(pkg);
-        if (from < 0) { moving = false; return; }
-        int step = direction == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : direction == KeyEvent.KEYCODE_DPAD_RIGHT ? 1
-                : direction == KeyEvent.KEYCODE_DPAD_UP ? -PER_ROW : PER_ROW;
+        if (from < 0) return;
+        int step = direction == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : direction == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : 0;
+        if (step == 0) return;
         int to = Math.max(0, Math.min(list.size() - 1, from + step));
         if (to == from) return;
         Collections.swap(list, from, to);
-        getSharedPreferences(PREFS, 0).edit().putString("order", join(list)).apply();
-        moving = false;
         focusedKey = pkg;
-        dirty = true;
+        buildTiles();
+    }
+
+    private void finishMove() {
+        if (moveOrder != null) getSharedPreferences(PREFS, 0).edit().putString("order", join(moveOrder)).apply();
+        moving = false;
+        movingKey = null;
+        moveOrder = null;
+        moveHint.setVisibility(View.GONE);
         buildTiles();
     }
 
