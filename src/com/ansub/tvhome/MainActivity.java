@@ -40,6 +40,7 @@ import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.PopupWindow;
 import android.widget.TextClock;
 import android.widget.TextView;
 import android.app.AlertDialog;
@@ -66,7 +67,7 @@ public class MainActivity extends Activity {
     private static final int PER_ROW = 6, MAX_INPUTS = 4;
     // Shared, translucent focus tint: no bitmap, blur layer, or per-focus allocation.
     private static final PorterDuffColorFilter FOCUS_GLOW =
-            new PorterDuffColorFilter(0x1675D7FF, PorterDuff.Mode.SRC_ATOP);
+            new PorterDuffColorFilter(0x16FFFFFF, PorterDuff.Mode.SRC_ATOP);
 
     // Layout is designed at 1920x1080 and scaled to the TV's real UI size by px().
     private static final int MARGIN = 96, GAP = 36, RADIUS = 22;
@@ -80,6 +81,10 @@ public class MainActivity extends Activity {
     private HorizontalScrollView appScroll;
     private ImageView wifiStatusView;
     private WifiStatusIcon wifiStatusIcon;
+    private PopupWindow appActionsPopup;
+    private View appActionsAnchor;
+    private String appActionsPackage;
+    private boolean menuOpeningPress;
     private final List<View> tiles = new ArrayList<>();
     private final List<View> appTiles = new ArrayList<>();
     private final List<View> importantTiles = new ArrayList<>();
@@ -153,8 +158,8 @@ public class MainActivity extends Activity {
                 settingsBg, new InsetDrawable(settingsRing, px(5))
         }));
         settingsButton.setOnFocusChangeListener((v, has) -> {
-            settingsBg.setColor(has ? 0x2875D7FF : 0x13FFFFFF);
-            settingsRing.setStroke(px(2), has ? 0xFF75D7FF : Color.TRANSPARENT);
+            settingsBg.setColor(has ? 0x28FFFFFF : 0x13FFFFFF);
+            settingsRing.setStroke(px(2), has ? Color.WHITE : Color.TRANSPARENT);
             v.animate().scaleX(has ? 1.1f : 1f).scaleY(has ? 1.1f : 1f).setDuration(140).start();
         });
         settingsButton.setOnClickListener(v -> open(SETTINGS));
@@ -182,8 +187,8 @@ public class MainActivity extends Activity {
                 wifiBg, new InsetDrawable(wifiRing, px(5))
         }));
         wifiStatusView.setOnFocusChangeListener((v, has) -> {
-            wifiBg.setColor(has ? 0x2875D7FF : 0x13FFFFFF);
-            wifiRing.setStroke(px(2), has ? 0xFF75D7FF : Color.TRANSPARENT);
+            wifiBg.setColor(has ? 0x28FFFFFF : 0x13FFFFFF);
+            wifiRing.setStroke(px(2), has ? Color.WHITE : Color.TRANSPARENT);
             v.animate().scaleX(has ? 1.1f : 1f).scaleY(has ? 1.1f : 1f).setDuration(140).start();
         });
         wifiStatusView.setOnClickListener(v -> openWifiSettings());
@@ -311,7 +316,12 @@ public class MainActivity extends Activity {
     }
 
     @Override
-    public void onBackPressed() { /* home screen: nothing to go back to */ }
+    public void onBackPressed() {
+        if (appActionsPopup != null && appActionsPopup.isShowing()) {
+            closeAppActions(true);
+            return;
+        }
+    }
 
     // Static warm gradient, drawn once by the window: no extra view, no animation.
     private Drawable background() {
@@ -460,6 +470,15 @@ public class MainActivity extends Activity {
         card.setId(View.generateViewId());
         card.setTag(key);
 
+        final View selectionRing = new View(this);
+        GradientDrawable ringBg = new GradientDrawable();
+        ringBg.setColor(Color.TRANSPARENT);
+        ringBg.setCornerRadius(px(RADIUS + 7));
+        ringBg.setStroke(px(2), Color.WHITE);
+        selectionRing.setBackground(ringBg);
+        selectionRing.setVisibility(View.INVISIBLE);
+        selectionRing.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+
         // Banner tiles show their name underneath when focused.
         final TextView caption = banner == null ? null : text(px(24), Color.WHITE, regular);
         if (caption != null) {
@@ -475,19 +494,25 @@ public class MainActivity extends Activity {
                 appScroll.post(() -> scrollTileIntoView(v));
             }
             boolean selectedForMove = has && moving && key.equals(movingKey);
+            selectionRing.setVisibility(has && appTile ? View.VISIBLE : View.INVISIBLE);
             if (glass) bg.setColor(has
-                    ? (selectedForMove ? 0x4075D7FF : 0x2675D7FF) : 0x13FFFFFF);
-            if (bannerImage != null) bannerImage.setColorFilter(has ? FOCUS_GLOW : null);
+                    ? (selectedForMove ? 0x40FFFFFF : 0x26FFFFFF) : 0x13FFFFFF);
+            if (bannerImage != null) bannerImage.setColorFilter(appTile ? null : (has ? FOCUS_GLOW : null));
             bg.setStroke(selectedForMove ? px(4) : has ? px(3) : Math.max(1, px(2)),
-                    selectedForMove ? 0xFFFFC27A : has ? 0xFF75D7FF : 0x17FFFFFF);
-            float lift = selectedForMove ? 1.22f : has ? 1.16f : 1f;
-            v.animate().scaleX(lift).scaleY(lift).translationZ(has ? (selectedForMove ? px(40) : px(26)) : 0)
-                    .setDuration(140).withLayer().start();
+                    selectedForMove ? 0xFFFFC27A : has ? Color.WHITE : 0x17FFFFFF);
+            float lift = appTile ? 1f : selectedForMove ? 1.22f : has ? 1.16f : 1f;
+            v.animate().cancel();
+            v.setScaleX(lift);
+            v.setScaleY(lift);
+            v.setTranslationZ(appTile ? 0 : has ? (selectedForMove ? px(40) : px(26)) : 0);
             if (caption != null) caption.setVisibility(has ? View.VISIBLE : View.INVISIBLE);
         });
         card.setOnClickListener(v -> open(key));
         final boolean[] longPressTriggered = {false};
-        final Runnable markLongPress = () -> longPressTriggered[0] = true;
+        final Runnable markLongPress = () -> {
+            longPressTriggered[0] = true;
+            showAppActions(key);
+        };
         card.setOnKeyListener((v, code, ev) -> {
             boolean arrow = code == KeyEvent.KEYCODE_DPAD_LEFT || code == KeyEvent.KEYCODE_DPAD_RIGHT
                     || code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN;
@@ -509,7 +534,7 @@ public class MainActivity extends Activity {
                 v.removeCallbacks(markLongPress);
                 if (longPressTriggered[0]) {
                     longPressTriggered[0] = false;
-                    showAppActions(key);
+                    menuOpeningPress = false;
                 } else if (moving) {
                     finishMove();
                 } else {
@@ -523,6 +548,10 @@ public class MainActivity extends Activity {
         FrameLayout wrap = new FrameLayout(this);
         wrap.setClipChildren(false);
         wrap.addView(card, new FrameLayout.LayoutParams(w, h));
+        FrameLayout.LayoutParams ringLp = new FrameLayout.LayoutParams(w + px(14), h + px(14));
+        ringLp.leftMargin = -px(7);
+        ringLp.topMargin = -px(7);
+        wrap.addView(selectionRing, ringLp);
         if (caption != null) {
             FrameLayout.LayoutParams cp = new FrameLayout.LayoutParams(w, -2);
             cp.topMargin = h + px(22);
@@ -537,19 +566,170 @@ public class MainActivity extends Activity {
     }
 
     private void showAppActions(String pkg) {
-        new AlertDialog.Builder(this).setTitle("App options")
-                .setItems(new String[] {"Move app", "Hide app", "App info"}, (d, which) -> {
-                    if (which == 0) {
-                        moveOrder = new ArrayList<>(appList(getPackageManager()));
-                        moving = true;
-                        movingKey = pkg;
-                        focusedKey = pkg;
-                        moveHint.setVisibility(View.VISIBLE);
-                        buildTiles();
-                    }
-                    else if (which == 1) hideApp(pkg);
-                    else showAppInfo(pkg);
-                }).show();
+        closeAppActions(false);
+        appActionsPackage = pkg;
+        appActionsAnchor = null;
+        for (View tile : appTiles) {
+            if (pkg.equals(tile.getTag())) {
+                appActionsAnchor = tile;
+                break;
+            }
+        }
+        menuOpeningPress = true;
+
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.HORIZONTAL);
+        panel.setClipChildren(false);
+        panel.setClipToPadding(false);
+        panel.setPadding(px(28), px(32), px(28), px(32));
+        GradientDrawable panelBg = new GradientDrawable();
+        panelBg.setColor(0xF51A1718);
+        panelBg.setCornerRadius(px(28));
+        panelBg.setStroke(px(1), 0x44FFFFFF);
+        panel.setBackground(panelBg);
+
+        addActionButton(panel, "▶", "Open", () -> {
+            closeAppActions(false);
+            open(pkg);
+        });
+
+        addActionButton(panel, "↕", "Move", () -> {
+            moveOrder = new ArrayList<>(appList(getPackageManager()));
+            moving = true;
+            movingKey = pkg;
+            focusedKey = pkg;
+            closeAppActions(false);
+            moveHint.setVisibility(View.VISIBLE);
+            buildTiles();
+        });
+        addActionButton(panel, "▦", "Hide", () -> {
+            closeAppActions(false);
+            hideApp(pkg);
+        });
+        addActionButton(panel, "ⓘ", "App info", () -> {
+            closeAppActions(false);
+            showAppInfo(pkg);
+        });
+
+        int menuWidth = px(4 * 160 + 4 * 16 + 2 * 28);
+        FrameLayout popupContent = new FrameLayout(this);
+        popupContent.setClipChildren(false);
+        popupContent.setClipToPadding(false);
+        TextView pointer = text(px(24), 0xFFF1EEEE, semibold);
+        pointer.setText("▲");
+        pointer.setGravity(Gravity.CENTER);
+        pointer.setContentDescription("Menu for " + label(getPackageManager(), pkg));
+        FrameLayout.LayoutParams pointerLp = new FrameLayout.LayoutParams(px(40), px(24));
+        popupContent.addView(pointer, pointerLp);
+        FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(-1, -2);
+        panelLp.topMargin = px(22);
+        popupContent.addView(panel, panelLp);
+        PopupWindow popup = new PopupWindow(popupContent, menuWidth, -2, true);
+        popup.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
+        popup.setOutsideTouchable(true);
+        popup.setElevation(px(18));
+        popup.setOnDismissListener(() -> {
+            if (appActionsPopup == popup) {
+                View dismissedAnchor = appActionsAnchor;
+                appActionsPopup = null;
+                appActionsPackage = null;
+                appActionsAnchor = null;
+                menuOpeningPress = false;
+                if (dismissedAnchor != null && dismissedAnchor.isAttachedToWindow()) {
+                    dismissedAnchor.requestFocus();
+                    appScroll.post(() -> scrollTileIntoView(dismissedAnchor));
+                }
+            }
+        });
+        appActionsPopup = popup;
+        View anchor = appActionsAnchor;
+        if (anchor != null && anchor.isAttachedToWindow()) {
+            int[] anchorLocation = new int[2];
+            int[] rootLocation = new int[2];
+            anchor.getLocationOnScreen(anchorLocation);
+            root.getLocationOnScreen(rootLocation);
+            int availableWidth = Math.max(px(1), root.getWidth() - px(16));
+            int popupWidth = Math.min(menuWidth, availableWidth);
+            if (popupWidth != menuWidth) popup.setWidth(popupWidth);
+            int desiredLeft = anchorLocation[0] - rootLocation[0] + (anchor.getWidth() - popupWidth) / 2;
+            int clampedLeft = Math.max(px(8), Math.min(desiredLeft, root.getWidth() - popupWidth - px(8)));
+            FrameLayout.LayoutParams pointerPosition = (FrameLayout.LayoutParams) pointer.getLayoutParams();
+            pointerPosition.leftMargin = Math.max(0, Math.min(popupWidth - px(40),
+                    anchorLocation[0] - rootLocation[0] + anchor.getWidth() / 2 - clampedLeft - px(20)));
+            pointer.setLayoutParams(pointerPosition);
+            popup.showAsDropDown(anchor, clampedLeft - (anchorLocation[0] - rootLocation[0]), px(52));
+        } else {
+            popup.showAtLocation(root, Gravity.CENTER, 0, 0);
+        }
+        panel.getChildAt(0).requestFocus();
+    }
+
+    private void addActionButton(LinearLayout panel, String icon, String title, Runnable action) {
+        LinearLayout button = new LinearLayout(this);
+        button.setOrientation(LinearLayout.VERTICAL);
+        button.setGravity(Gravity.CENTER);
+        button.setFocusable(true);
+        button.setClickable(true);
+        button.setContentDescription(title);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xFF292A2E);
+        bg.setCornerRadius(px(20));
+        bg.setStroke(px(2), 0x334A525C);
+        button.setBackground(bg);
+        TextView glyph = text(px(34), Color.WHITE, regular);
+        glyph.setText(icon);
+        glyph.setGravity(Gravity.CENTER);
+        button.addView(glyph, new LinearLayout.LayoutParams(-1, px(48)));
+        TextView caption = text(px(25), Color.WHITE, regular);
+        caption.setText(title);
+        caption.setGravity(Gravity.CENTER);
+        button.addView(caption, new LinearLayout.LayoutParams(-1, px(50)));
+        button.setOnFocusChangeListener((v, focused) -> {
+            bg.setColor(focused ? 0xFF383637 : 0xFF292A2E);
+            bg.setStroke(px(3), focused ? Color.WHITE : 0x334A525C);
+            v.animate().scaleX(focused ? 1.03f : 1f).scaleY(focused ? 1.03f : 1f)
+                    .setDuration(120).start();
+        });
+        button.setOnClickListener(v -> action.run());
+        button.setOnKeyListener((v, code, event) -> {
+            boolean select = code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER
+                    || code == KeyEvent.KEYCODE_NUMPAD_ENTER;
+            if (!select) return false;
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                if (!menuOpeningPress && event.getRepeatCount() == 0) v.setTag(Boolean.TRUE);
+                return true;
+            }
+            if (event.getAction() == KeyEvent.ACTION_UP) {
+                if (menuOpeningPress) {
+                    menuOpeningPress = false;
+                    v.setTag(null);
+                } else if (Boolean.TRUE.equals(v.getTag())) {
+                    v.setTag(null);
+                    v.performClick();
+                }
+                return true;
+            }
+            return true;
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(px(160), px(124));
+        lp.leftMargin = px(8);
+        lp.rightMargin = px(8);
+        panel.addView(button, lp);
+    }
+
+    private void closeAppActions(boolean restoreFocus) {
+        String pkg = appActionsPackage;
+        View anchor = appActionsAnchor;
+        PopupWindow popup = appActionsPopup;
+        appActionsPopup = null;
+        appActionsPackage = null;
+        appActionsAnchor = null;
+        menuOpeningPress = false;
+        if (popup != null && popup.isShowing()) popup.dismiss();
+        if (restoreFocus && anchor != null && anchor.isAttachedToWindow()) {
+            anchor.requestFocus();
+            appScroll.post(() -> scrollTileIntoView(anchor));
+        }
     }
 
     private void showAppInfo(String pkg) {
