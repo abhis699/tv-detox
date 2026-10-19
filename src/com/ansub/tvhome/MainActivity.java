@@ -9,14 +9,19 @@ import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.net.wifi.SupplicantState;
+import android.net.wifi.WifiInfo;
+import android.net.wifi.WifiManager;
 import android.net.Uri;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.InsetDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.LayerDrawable;
 import android.media.tv.TvContract;
@@ -68,6 +73,8 @@ public class MainActivity extends Activity {
     private LinearLayout appGrid;
     private LinearLayout importantRow;
     private HorizontalScrollView appScroll;
+    private ImageView wifiStatusView;
+    private WifiStatusIcon wifiStatusIcon;
     private final List<View> tiles = new ArrayList<>();
     private final List<View> appTiles = new ArrayList<>();
     private final List<View> importantTiles = new ArrayList<>();
@@ -82,6 +89,9 @@ public class MainActivity extends Activity {
 
     private final BroadcastReceiver packagesChanged = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) { dirty = true; }
+    };
+    private final BroadcastReceiver wifiChanged = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) { updateWifiStatus(); }
     };
 
     @Override
@@ -112,6 +122,7 @@ public class MainActivity extends Activity {
         settingsButton.setText("⚙");
         settingsButton.setGravity(Gravity.CENTER);
         settingsButton.setFocusable(true);
+        settingsButton.setId(View.generateViewId());
         settingsButton.setContentDescription("TV Settings");
         GradientDrawable settingsBg = new GradientDrawable();
         settingsBg.setShape(GradientDrawable.OVAL);
@@ -126,6 +137,31 @@ public class MainActivity extends Activity {
         sb.topMargin = px(82);
         sb.rightMargin = px(MARGIN);
         root.addView(settingsButton, sb);
+
+        wifiStatusIcon = new WifiStatusIcon();
+        wifiStatusView = new ImageView(this);
+        // Keep the outer focus circle the same size as Settings while drawing
+        // the Wi-Fi glyph at roughly the same visual size as the gear.
+        wifiStatusView.setImageDrawable(new InsetDrawable(wifiStatusIcon, px(22)));
+        wifiStatusView.setFocusable(true);
+        wifiStatusView.setId(View.generateViewId());
+        wifiStatusView.setContentDescription("Wi-Fi status");
+        GradientDrawable wifiBg = new GradientDrawable();
+        wifiBg.setShape(GradientDrawable.OVAL);
+        wifiBg.setColor(0x13FFFFFF);
+        wifiStatusView.setBackground(wifiBg);
+        wifiStatusView.setOnFocusChangeListener((v, has) -> {
+            wifiBg.setColor(has ? 0x38FFFFFF : 0x13FFFFFF);
+            v.animate().scaleX(has ? 1.1f : 1f).scaleY(has ? 1.1f : 1f).setDuration(140).start();
+        });
+        wifiStatusView.setOnClickListener(v -> openWifiSettings());
+        FrameLayout.LayoutParams wp = new FrameLayout.LayoutParams(px(76), px(76), Gravity.TOP | Gravity.RIGHT);
+        wp.topMargin = px(82);
+        wp.rightMargin = px(MARGIN + 100);
+        root.addView(wifiStatusView, wp);
+        settingsButton.setNextFocusLeftId(wifiStatusView.getId());
+        wifiStatusView.setNextFocusRightId(settingsButton.getId());
+        updateWifiStatus();
 
         appScroll = new HorizontalScrollView(this);
         appScroll.setHorizontalScrollBarEnabled(false);
@@ -154,11 +190,17 @@ public class MainActivity extends Activity {
         f.addDataScheme("package");
         if (android.os.Build.VERSION.SDK_INT >= 33) registerReceiver(packagesChanged, f, Context.RECEIVER_EXPORTED);
         else registerReceiver(packagesChanged, f);
+        IntentFilter wf = new IntentFilter();
+        wf.addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION);
+        wf.addAction(WifiManager.WIFI_STATE_CHANGED_ACTION);
+        if (android.os.Build.VERSION.SDK_INT >= 33) registerReceiver(wifiChanged, wf, Context.RECEIVER_EXPORTED);
+        else registerReceiver(wifiChanged, wf);
     }
 
     @Override
     protected void onDestroy() {
         unregisterReceiver(packagesChanged);
+        unregisterReceiver(wifiChanged);
         super.onDestroy();
     }
 
@@ -220,6 +262,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        updateWifiStatus();
         // Rebuild only when apps were installed, removed or updated.
         if (dirty) {
             dirty = false;
@@ -560,6 +603,29 @@ public class MainActivity extends Activity {
         try { startActivity(i); } catch (Exception ignored) {}
     }
 
+    private void updateWifiStatus() {
+        if (wifiStatusIcon == null) return;
+        boolean connected = false;
+        try {
+            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm != null && wm.isWifiEnabled()) {
+                WifiInfo info = wm.getConnectionInfo();
+                connected = info != null && info.getNetworkId() >= 0
+                        && info.getSupplicantState() == SupplicantState.COMPLETED;
+            }
+        } catch (Exception ignored) {}
+        wifiStatusIcon.setConnected(connected);
+        wifiStatusView.setContentDescription(connected ? "Wi-Fi connected" : "Wi-Fi disconnected");
+    }
+
+    private void openWifiSettings() {
+        try { startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS)); }
+        catch (Exception e) {
+            try { startActivity(new Intent(Settings.ACTION_WIRELESS_SETTINGS)); }
+            catch (Exception ignored) { open(SETTINGS); }
+        }
+    }
+
     private static boolean isInput(String key) {
         return key.indexOf('/') > 0;
     }
@@ -645,5 +711,53 @@ public class MainActivity extends Activity {
         lp.leftMargin = x;
         lp.topMargin = y;
         return lp;
+    }
+
+    private static final class WifiStatusIcon extends Drawable {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private boolean connected;
+
+        WifiStatusIcon() {
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+        }
+
+        void setConnected(boolean value) {
+            if (connected != value) {
+                connected = value;
+                invalidateSelf();
+            }
+        }
+
+        @Override public void draw(Canvas canvas) {
+            Rect bounds = getBounds();
+            float size = Math.min(bounds.width(), bounds.height());
+            float cx = bounds.centerX();
+            float cy = bounds.top + size * 0.76f;
+            float stroke = size * 0.065f;
+            paint.setStrokeWidth(stroke);
+            paint.setColor(connected ? 0xFF7CE5B1 : 0xFFB9B1B0);
+            for (float radius : new float[] {0.62f, 0.43f, 0.24f}) {
+                float r = size * radius;
+                canvas.drawArc(cx - r, cy - r, cx + r, cy + r, 225, 90, false, paint);
+            }
+            paint.setStyle(Paint.Style.FILL);
+            canvas.drawCircle(cx, bounds.top + size * 0.90f, size * 0.065f, paint);
+            if (!connected) {
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(size * 0.09f);
+                paint.setColor(0xFFFF756E);
+                canvas.drawLine(cx - size * 0.34f, bounds.top + size * 0.36f,
+                        cx + size * 0.34f, bounds.top + size * 0.84f, paint);
+            }
+            paint.setStyle(Paint.Style.STROKE);
+        }
+
+        @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); invalidateSelf(); }
+        @Override public void setColorFilter(android.graphics.ColorFilter filter) { paint.setColorFilter(filter); invalidateSelf(); }
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+        @Override public int getIntrinsicWidth() { return 44; }
+        @Override public int getIntrinsicHeight() { return 44; }
     }
 }
