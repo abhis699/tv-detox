@@ -17,6 +17,8 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.BitmapDrawable;
@@ -62,6 +64,9 @@ public class MainActivity extends Activity {
     private static final String PLAY_STORE = "com.android.vending";
     private static final String SETTINGS = "settings";
     private static final int PER_ROW = 6, MAX_INPUTS = 4;
+    // Shared, translucent focus tint: no bitmap, blur layer, or per-focus allocation.
+    private static final PorterDuffColorFilter FOCUS_GLOW =
+            new PorterDuffColorFilter(0x1675D7FF, PorterDuff.Mode.SRC_ATOP);
 
     // Layout is designed at 1920x1080 and scaled to the TV's real UI size by px().
     private static final int MARGIN = 96, GAP = 36, RADIUS = 22;
@@ -127,9 +132,16 @@ public class MainActivity extends Activity {
         GradientDrawable settingsBg = new GradientDrawable();
         settingsBg.setShape(GradientDrawable.OVAL);
         settingsBg.setColor(0x13FFFFFF);
-        settingsButton.setBackground(settingsBg);
+        GradientDrawable settingsRing = new GradientDrawable();
+        settingsRing.setShape(GradientDrawable.OVAL);
+        settingsRing.setColor(Color.TRANSPARENT);
+        settingsRing.setStroke(px(2), Color.TRANSPARENT);
+        settingsButton.setBackground(new LayerDrawable(new Drawable[] {
+                settingsBg, new InsetDrawable(settingsRing, px(5))
+        }));
         settingsButton.setOnFocusChangeListener((v, has) -> {
-            settingsBg.setColor(has ? 0x38FFFFFF : 0x13FFFFFF);
+            settingsBg.setColor(has ? 0x2875D7FF : 0x13FFFFFF);
+            settingsRing.setStroke(px(2), has ? 0xFF75D7FF : Color.TRANSPARENT);
             v.animate().scaleX(has ? 1.1f : 1f).scaleY(has ? 1.1f : 1f).setDuration(140).start();
         });
         settingsButton.setOnClickListener(v -> open(SETTINGS));
@@ -149,9 +161,16 @@ public class MainActivity extends Activity {
         GradientDrawable wifiBg = new GradientDrawable();
         wifiBg.setShape(GradientDrawable.OVAL);
         wifiBg.setColor(0x13FFFFFF);
-        wifiStatusView.setBackground(wifiBg);
+        GradientDrawable wifiRing = new GradientDrawable();
+        wifiRing.setShape(GradientDrawable.OVAL);
+        wifiRing.setColor(Color.TRANSPARENT);
+        wifiRing.setStroke(px(2), Color.TRANSPARENT);
+        wifiStatusView.setBackground(new LayerDrawable(new Drawable[] {
+                wifiBg, new InsetDrawable(wifiRing, px(5))
+        }));
         wifiStatusView.setOnFocusChangeListener((v, has) -> {
-            wifiBg.setColor(has ? 0x38FFFFFF : 0x13FFFFFF);
+            wifiBg.setColor(has ? 0x2875D7FF : 0x13FFFFFF);
+            wifiRing.setStroke(px(2), has ? 0xFF75D7FF : Color.TRANSPARENT);
             v.animate().scaleX(has ? 1.1f : 1f).scaleY(has ? 1.1f : 1f).setDuration(140).start();
         });
         wifiStatusView.setOnClickListener(v -> openWifiSettings());
@@ -389,12 +408,12 @@ public class MainActivity extends Activity {
                          Drawable appIcon, int w, int h, int gap, boolean appTile) {
         FrameLayout card = new FrameLayout(this);
         final GradientDrawable bg = new GradientDrawable();
+        final ImageView bannerImage = banner == null ? null : new ImageView(this);
         bg.setCornerRadius(px(RADIUS));
         if (banner != null) {
             bg.setColor(0xFF1E1A1C);
-            ImageView iv = new ImageView(this);
-            iv.setImageDrawable(fit(banner, w, h));
-            card.addView(iv, new FrameLayout.LayoutParams(-1, -1));
+            bannerImage.setImageDrawable(fit(banner, w, h));
+            card.addView(bannerImage, new FrameLayout.LayoutParams(-1, -1));
         } else {
             // Quiet "glass" tile: icon above label.
             bg.setColor(0x13FFFFFF);
@@ -439,9 +458,12 @@ public class MainActivity extends Activity {
                 appScroll.post(() -> scrollTileIntoView(v));
             }
             boolean selectedForMove = has && moving && key.equals(movingKey);
-            if (glass) bg.setColor(has ? (selectedForMove ? 0x70FFFFFF : 0x38FFFFFF) : 0x13FFFFFF);
-            bg.setStroke(selectedForMove ? px(4) : Math.max(1, px(2)), selectedForMove ? 0xFFFFC27A : 0x17FFFFFF);
-            float lift = selectedForMove ? 1.22f : has ? 1.1f : 1f;
+            if (glass) bg.setColor(has
+                    ? (selectedForMove ? 0x4075D7FF : 0x2675D7FF) : 0x13FFFFFF);
+            if (bannerImage != null) bannerImage.setColorFilter(has ? FOCUS_GLOW : null);
+            bg.setStroke(selectedForMove ? px(4) : has ? px(3) : Math.max(1, px(2)),
+                    selectedForMove ? 0xFFFFC27A : has ? 0xFF75D7FF : 0x17FFFFFF);
+            float lift = selectedForMove ? 1.22f : has ? 1.16f : 1f;
             v.animate().scaleX(lift).scaleY(lift).translationZ(has ? (selectedForMove ? px(40) : px(26)) : 0)
                     .setDuration(140).withLayer().start();
             if (caption != null) caption.setVisibility(has ? View.VISIBLE : View.INVISIBLE);
