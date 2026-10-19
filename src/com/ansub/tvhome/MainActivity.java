@@ -495,12 +495,16 @@ public class MainActivity extends Activity {
             }
             boolean selectedForMove = has && moving && key.equals(movingKey);
             selectionRing.setVisibility(has && appTile ? View.VISIBLE : View.INVISIBLE);
+            float ringScale = has && appTile ? 1.15f : 1f;
+            selectionRing.setScaleX(ringScale);
+            selectionRing.setScaleY(ringScale);
             if (glass) bg.setColor(has
                     ? (selectedForMove ? 0x40FFFFFF : 0x26FFFFFF) : 0x13FFFFFF);
             if (bannerImage != null) bannerImage.setColorFilter(appTile ? null : (has ? FOCUS_GLOW : null));
-            bg.setStroke(selectedForMove ? px(4) : has ? px(3) : Math.max(1, px(2)),
-                    selectedForMove ? 0xFFFFC27A : has ? Color.WHITE : 0x17FFFFFF);
-            float lift = appTile ? 1f : selectedForMove ? 1.22f : has ? 1.16f : 1f;
+            bg.setStroke(selectedForMove ? px(4) : has && appTile ? 0 : has ? px(3) : Math.max(1, px(2)),
+                    selectedForMove ? 0xFFFFC27A : has && appTile ? Color.TRANSPARENT
+                            : has ? Color.WHITE : 0x17FFFFFF);
+            float lift = appTile ? (has ? 1.15f : 1f) : selectedForMove ? 1.22f : has ? 1.16f : 1f;
             v.animate().cancel();
             v.setScaleX(lift);
             v.setScaleY(lift);
