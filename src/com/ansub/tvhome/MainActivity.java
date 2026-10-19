@@ -98,6 +98,25 @@ public class MainActivity extends Activity {
         clock.addView(time, tp);
         root.addView(clock, at(px(MARGIN), px(92), -2, -2));
 
+        TextView settingsButton = text(px(42), 0xE6FFFFFF, regular);
+        settingsButton.setText("⚙");
+        settingsButton.setGravity(Gravity.CENTER);
+        settingsButton.setFocusable(true);
+        settingsButton.setContentDescription("TV Settings");
+        GradientDrawable settingsBg = new GradientDrawable();
+        settingsBg.setShape(GradientDrawable.OVAL);
+        settingsBg.setColor(0x13FFFFFF);
+        settingsButton.setBackground(settingsBg);
+        settingsButton.setOnFocusChangeListener((v, has) -> {
+            settingsBg.setColor(has ? 0x38FFFFFF : 0x13FFFFFF);
+            v.animate().scaleX(has ? 1.1f : 1f).scaleY(has ? 1.1f : 1f).setDuration(140).start();
+        });
+        settingsButton.setOnClickListener(v -> open(SETTINGS));
+        FrameLayout.LayoutParams sb = new FrameLayout.LayoutParams(px(76), px(76), Gravity.TOP | Gravity.RIGHT);
+        sb.topMargin = px(82);
+        sb.rightMargin = px(MARGIN);
+        root.addView(settingsButton, sb);
+
         appScroll = new ScrollView(this);
         appScroll.setFillViewport(false);
         appScroll.setClipChildren(false);
