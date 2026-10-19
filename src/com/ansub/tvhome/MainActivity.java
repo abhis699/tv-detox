@@ -31,6 +31,8 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextClock;
 import android.widget.TextView;
+import android.widget.ScrollView;
+import android.app.AlertDialog;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -44,7 +46,7 @@ public class MainActivity extends Activity {
     //  1. a list saved at install time:  am start -n com.ansub.tvhome/.MainActivity --es apps "pkg1,pkg2"
     //     (--es apps auto  goes back to 2)
     //  2. apps.txt (built in as Apps.LIST), topped up with other TV apps installed on this TV.
-    // Missing apps are skipped, and only the first six are shown.
+    // Saved app order is retained; all launchable apps are shown.
     private static final String PREFS = "config";
     private static final List<String> NOT_APPS = Arrays.asList("com.android.vending", "com.android.tv.settings",
             "com.android.tv", "com.google.android.tvlauncher", "com.google.android.apps.tv.launcherx",
@@ -61,9 +63,12 @@ public class MainActivity extends Activity {
     private static Typeface regular, semibold;
 
     private FrameLayout root;
+    private FrameLayout appGrid;
+    private ScrollView appScroll;
     private final List<View> tiles = new ArrayList<>();
     private boolean dirty = true;
     private String focusedKey;
+    private boolean moving;
 
     private final BroadcastReceiver packagesChanged = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) { dirty = true; }
@@ -93,6 +98,14 @@ public class MainActivity extends Activity {
         clock.addView(time, tp);
         root.addView(clock, at(px(MARGIN), px(92), -2, -2));
 
+        appScroll = new ScrollView(this);
+        appScroll.setFillViewport(false);
+        appScroll.setClipChildren(false);
+        appGrid = new FrameLayout(this);
+        appGrid.setClipChildren(false);
+        appScroll.addView(appGrid, new ScrollView.LayoutParams(-1, -2));
+        FrameLayout.LayoutParams sp = at(0, px(500), -1, -1);
+        root.addView(appScroll, sp);
         setContentView(root);
 
         IntentFilter f = new IntentFilter();
@@ -132,23 +145,29 @@ public class MainActivity extends Activity {
 
     private List<String> appList(PackageManager pm) {
         List<String> out = new ArrayList<>();
+        SharedPreferences prefs = getSharedPreferences(PREFS, 0);
+        String hidden = prefs.getString("hidden", "");
+        List<String> hiddenApps = Arrays.asList(hidden.split(","));
         String saved = getSharedPreferences(PREFS, 0).getString("apps", null);
         String[] wanted = saved != null ? saved.split("[,\\s]+") : Apps.LIST;
         for (String p : wanted) if (!p.isEmpty() && !out.contains(p) && launchIntent(pm, p) != null) out.add(p);
-        if (saved == null) {
-            // Top up with other TV apps people installed (or updated), skipping launchers and system tools.
-            Intent q = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER);
+        // Enumerate both TV and phone launcher activities; only apps with a launcher entry/icon belong here.
+        for (String category : new String[] {Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER}) {
+            Intent q = new Intent(Intent.ACTION_MAIN).addCategory(category);
             for (ResolveInfo ri : pm.queryIntentActivities(q, 0)) {
-                if (out.size() >= PER_ROW) break;
                 String p = ri.activityInfo.packageName;
-                int flags = ri.activityInfo.applicationInfo.flags;
-                boolean stockSystem = (flags & ApplicationInfo.FLAG_SYSTEM) != 0
-                        && (flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0;
-                if (stockSystem || out.contains(p) || NOT_APPS.contains(p) || p.equals(getPackageName())) continue;
-                out.add(p);
+                if (!out.contains(p) && !NOT_APPS.contains(p) && !p.equals(getPackageName())) out.add(p);
             }
         }
-        return out.size() > PER_ROW ? out.subList(0, PER_ROW) : out;
+        out.removeAll(hiddenApps);
+        String order = prefs.getString("order", "");
+        if (!order.isEmpty()) {
+            List<String> sorted = new ArrayList<>();
+            for (String p : order.split(",")) if (out.contains(p) && !sorted.contains(p)) sorted.add(p);
+            for (String p : out) if (!sorted.contains(p)) sorted.add(p);
+            return sorted;
+        }
+        return out;
     }
 
     @Override
@@ -186,19 +205,19 @@ public class MainActivity extends Activity {
     }
 
     private void buildTiles() {
-        for (View t : tiles) root.removeView((View) t.getParent());
+        appGrid.removeAllViews();
         tiles.clear();
 
         PackageManager pm = getPackageManager();
-        int m = px(MARGIN), g = px(GAP), top1 = px(ROW1_TOP), top2 = px(ROW2_TOP);
+        int m = px(MARGIN), g = px(GAP);
         int w = (getResources().getDisplayMetrics().widthPixels - 2 * m - g * (PER_ROW - 1)) / PER_ROW;
         int h = w * 9 / 16;
 
-        int col = 0;
+        int col = 0, row = 0;
         List<String> apps = appList(pm);
         for (String pkg : apps) {
             Intent li = launchIntent(pm, pkg);
-            if (li == null || col == PER_ROW) continue;
+            if (li == null) continue;
             Drawable banner = null;
             try {
                 banner = pm.getActivityBanner(li);
@@ -209,16 +228,28 @@ public class MainActivity extends Activity {
             // Apps without a TV banner get a plain tile with their normal icon.
             Drawable icon = null;
             if (banner == null) try { icon = pm.getApplicationIcon(pkg); } catch (Exception ignored) {}
-            addTile(pkg, label, banner, null, icon, m + col * (w + g), top1, w, h);
-            col++;
+            int x = m + col * (w + g);
+            int y = px(16) + row * (h + px(76));
+            addTile(pkg, label, banner, null, icon, x, y, w, h);
+            if (++col == PER_ROW) { col = 0; row++; }
         }
-
+        int y = px(16) + row * (h + px(76));
         col = 0;
         if (!apps.contains(PLAY_STORE) && launchIntent(pm, PLAY_STORE) != null)
-            addTile(PLAY_STORE, "Play Store", null, LineIcon.PLAY, null, m + col++ * (w + g), top2, w, h);
-        for (TvInputInfo in : hdmiInputs())
-            addTile(in.getId(), inputLabel(in), null, LineIcon.HDMI, null, m + col++ * (w + g), top2, w, h);
-        addTile(SETTINGS, "Settings", null, LineIcon.SETTINGS, null, m + col * (w + g), top2, w, h);
+            addTile(PLAY_STORE, "Play Store", null, LineIcon.PLAY, null, m + col++ * (w + g), y, w, h);
+        for (TvInputInfo in : hdmiInputs()) {
+            if (col == PER_ROW) { col = 0; y += h + px(76); }
+            addTile(in.getId(), inputLabel(in), null, LineIcon.HDMI, null, m + col++ * (w + g), y, w, h);
+        }
+        if (col == PER_ROW) { col = 0; y += h + px(76); }
+        addTile(SETTINGS, "Settings", null, LineIcon.SETTINGS, null, m + col * (w + g), y, w, h);
+        TextView manage = text(px(24), 0xE0FFFFFF, regular);
+        manage.setText("Manage hidden apps"); manage.setGravity(Gravity.CENTER); manage.setFocusable(true);
+        manage.setOnClickListener(v -> manageHiddenApps());
+        manage.setOnLongClickListener(v -> { manageHiddenApps(); return true; });
+        FrameLayout.LayoutParams mp = new FrameLayout.LayoutParams(px(360), px(70));
+        mp.leftMargin = m; mp.topMargin = y + h + px(24);
+        appGrid.addView(manage, mp);
 
         View restore = null;
         for (View t : tiles) if (t.getTag().equals(focusedKey)) restore = t;
@@ -280,7 +311,15 @@ public class MainActivity extends Activity {
             if (caption != null) caption.setVisibility(has ? View.VISIBLE : View.INVISIBLE);
         });
         card.setOnClickListener(v -> open(key));
+        if (!isInput(key) && !SETTINGS.equals(key)) {
+            card.setLongClickable(true);
+            card.setOnLongClickListener(v -> { showAppActions(key); return true; });
+        }
         card.setOnKeyListener((v, code, ev) -> {
+            if (moving && ev.getAction() == KeyEvent.ACTION_UP && (code == KeyEvent.KEYCODE_DPAD_LEFT
+                    || code == KeyEvent.KEYCODE_DPAD_RIGHT || code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN)) {
+                moveApp(key, code); return true;
+            }
             if (ev.getAction() == KeyEvent.ACTION_UP && (code == KeyEvent.KEYCODE_DPAD_CENTER
                     || code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_NUMPAD_ENTER)) {
                 open(key);
@@ -297,8 +336,77 @@ public class MainActivity extends Activity {
             cp.topMargin = h + px(22);
             wrap.addView(caption, cp);
         }
-        root.addView(wrap, at(x, y, w, -2));
+        appGrid.addView(wrap, at(x, y, w, -2));
         tiles.add(card);
+    }
+
+    private void showAppActions(String pkg) {
+        new AlertDialog.Builder(this).setTitle("App options")
+                .setItems(new String[] {"Move app", "Hide app"}, (d, which) -> {
+                    if (which == 0) { moving = true; focusedKey = pkg; }
+                    else hideApp(pkg);
+                }).show();
+    }
+
+    private void moveApp(String pkg, int direction) {
+        List<String> list = appList(getPackageManager());
+        int from = list.indexOf(pkg);
+        if (from < 0) { moving = false; return; }
+        int step = direction == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : direction == KeyEvent.KEYCODE_DPAD_RIGHT ? 1
+                : direction == KeyEvent.KEYCODE_DPAD_UP ? -PER_ROW : PER_ROW;
+        int to = Math.max(0, Math.min(list.size() - 1, from + step));
+        if (to == from) return;
+        Collections.swap(list, from, to);
+        getSharedPreferences(PREFS, 0).edit().putString("order", join(list)).apply();
+        moving = false;
+        focusedKey = pkg;
+        dirty = true;
+        buildTiles();
+    }
+
+    private void hideApp(String pkg) {
+        SharedPreferences p = getSharedPreferences(PREFS, 0);
+        List<String> hidden = new ArrayList<>();
+        String old = p.getString("hidden", "");
+        if (!old.isEmpty()) hidden.addAll(Arrays.asList(old.split(",")));
+        if (!hidden.contains(pkg)) hidden.add(pkg);
+        p.edit().putString("hidden", join(hidden)).apply();
+        focusedKey = null;
+        buildTiles();
+    }
+
+    private void manageHiddenApps() {
+        PackageManager pm = getPackageManager();
+        List<String> all = new ArrayList<>();
+        for (String cat : new String[] {Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER}) {
+            for (ResolveInfo ri : pm.queryIntentActivities(new Intent(Intent.ACTION_MAIN).addCategory(cat), 0)) {
+                String pkg = ri.activityInfo.packageName;
+                if (!all.contains(pkg) && !NOT_APPS.contains(pkg) && !pkg.equals(getPackageName())) all.add(pkg);
+            }
+        }
+        Collections.sort(all, (a, b) -> label(pm, a).compareToIgnoreCase(label(pm, b)));
+        String[] labels = new String[all.size()]; boolean[] checked = new boolean[all.size()];
+        List<String> hidden = Arrays.asList(getSharedPreferences(PREFS, 0).getString("hidden", "").split(","));
+        for (int i = 0; i < all.size(); i++) { labels[i] = label(pm, all.get(i)); checked[i] = !hidden.contains(all.get(i)); }
+        new AlertDialog.Builder(this).setTitle("Apps (checked apps are visible)")
+                .setMultiChoiceItems(labels, checked, (d, which, isChecked) -> checked[which] = isChecked)
+                .setPositiveButton("Done", (d, which) -> {
+                    List<String> keepHidden = new ArrayList<>();
+                    for (int i = 0; i < all.size(); i++) if (!checked[i]) keepHidden.add(all.get(i));
+                    getSharedPreferences(PREFS, 0).edit().putString("hidden", join(keepHidden)).apply();
+                    buildTiles();
+                }).show();
+    }
+
+    private String label(PackageManager pm, String pkg) {
+        try { return pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString(); }
+        catch (Exception e) { return pkg; }
+    }
+
+    private static String join(List<String> values) {
+        StringBuilder out = new StringBuilder();
+        for (String value : values) { if (out.length() > 0) out.append(','); out.append(value); }
+        return out.toString();
     }
 
     private void open(String key) {

@@ -127,7 +127,7 @@ This turns your TV's own home screen back on and removes this one. To undo the c
 <summary><b>For developers: build it yourself</b></summary>
 <br>
 
-1. Put your default apps in `apps.txt` (package names, one per line, first six show). You can also pass them to `install.sh` instead.
+1. Put your preferred apps in `apps.txt` (package names, one per line). They appear first; other installed apps with launcher icons are added automatically. Long-press an app to move or hide it. Choose **Manage hidden apps** to show or restore apps.
 2. Install Java 17 and the Android SDK. On a Mac:
    ```sh
    brew install openjdk@17
